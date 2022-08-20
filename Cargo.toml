@@ -3,6 +3,7 @@ name = "tc_save_monger"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "a reimplementation in Rust of the save_monger library for the game Turing Complete"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
