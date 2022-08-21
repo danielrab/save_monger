@@ -447,7 +447,7 @@ extractable_enum! { u8: pub WireKind {
 }}
 
 #[derive(Debug)]
-struct WirePath(Vec<Point>);
+pub struct WirePath(pub Vec<Point>);
 impl Extractable for WirePath {
     fn extract(bytes: &mut &[u8]) -> Self {
         const TELEPORT_WIRE: u8 = 0b0010_0000;
@@ -481,10 +481,10 @@ impl Extractable for WirePath {
 }
 
 extractable_struct! { pub Wire {
-    kind: WireKind,
-    color: u8,
-    comment: String,
-    path: WirePath
+    pub kind: WireKind,
+    pub color: u8,
+    pub comment: String,
+    pub path: WirePath
 }}
 
 extractable_struct!{ pub Circuit {
