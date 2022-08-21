@@ -36,7 +36,7 @@ macro_rules! extractable_enum {
 
 macro_rules! extractable_vec {
     ($visibility:vis $name:ident, $size:ty) => {
-        $visibility struct $name<T>(Vec<T>);
+        $visibility struct $name<T>($visibility Vec<T>);
         impl<T: Extractable> Extractable for $name<T> {
             fn extract(bytes: &mut &[u8]) -> Self {
                 let len = <$size>::extract(bytes);
