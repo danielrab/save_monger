@@ -1,14 +1,7 @@
-#![allow(unused)]
+#![allow(dead_code)]
 
-use std::collections::HashMap;
-use std::fs;
-use std::mem::size_of;
-use std::time::Instant;
-use std::str::from_utf8;
-use std::ops::{Deref, DerefMut, Mul, Add};
-use core::slice::Iter;
-use snap::raw::Decoder;
-
+use std::{collections::HashMap, fs, mem::size_of, str::from_utf8};
+use snap::{raw::Decoder};
 
 pub fn get_data_from_file(path: &str) -> Circuit {
     let bytes = fs::read(path).expect("error reading file");
@@ -21,13 +14,13 @@ pub fn get_data_from_file(path: &str) -> Circuit {
     }
 }
 
-fn get_data_from_bytes(bytes: &[u8]) -> Circuit {
-    let mut bytes_iter = bytes.iter();
-    Circuit::extract(&mut bytes_iter).expect("failed to extract circuit")
+fn get_data_from_bytes(mut bytes: &[u8]) -> Circuit {
+    let bytes_ref = &mut bytes;
+    Circuit::extract_new(bytes_ref)
 }
 
-trait Extractable {
-    fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> where Self: Sized;
+trait NewExtractable {
+    fn extract_new(bytes: &mut &[u8]) -> Self where Self: Sized;
 }
 
 macro_rules! extractable_struct {
@@ -36,14 +29,12 @@ macro_rules! extractable_struct {
         $visibility struct $name {
             $($visibility_inner $field: $t,)*
         }
-        impl Extractable for $name {
-            fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> {
-                let res = Self{
-                    $($field: <$t>::extract(bytes_iter)?,)*
-                };
-                Some(res)
+        impl NewExtractable for $name {
+            fn extract_new(bytes: &mut &[u8]) -> Self  {
+                Self{
+                    $($field: <$t>::extract_new(bytes),)*
+                }
             }
-            
         }
     };
 }
@@ -68,10 +59,10 @@ macro_rules! extractable_enum {
                 }
             }
         }
-        impl Extractable for $name {
-            fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> {
-                let res = <$int>::extract(bytes_iter)?;
-                Some(res.into())
+        impl NewExtractable for $name {
+            fn extract_new(bytes: &mut &[u8]) -> Self {
+                let res = <$int>::extract_new(bytes);
+                res.into()
             }
         }
     };
@@ -396,9 +387,9 @@ extractable_struct! { pub CustomData {
     pub custom_displacement: Point,
 }}
 
-impl<T: Extractable, U: Extractable> Extractable for (T, U) {
-    fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> where Self: Sized {
-        Some((T::extract(bytes_iter)?, U::extract(bytes_iter)?))
+impl<T: NewExtractable, U: NewExtractable> NewExtractable for (T, U) {
+    fn extract_new(bytes_iter: &mut &[u8]) -> Self where Self: Sized {
+        (T::extract_new(bytes_iter), U::extract_new(bytes_iter))
     }
 }
 
@@ -408,16 +399,17 @@ pub enum Component {
     Custom{common_data: ComponentData, custom_data: CustomData},
     Program{common_data: ComponentData, program_data: HashMap<u64, String>},
 }
-impl Extractable for Component {
-    fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> where Self: Sized {
-        let common_data = ComponentData::extract(bytes_iter)?;
+
+impl NewExtractable for Component {
+    fn extract_new(bytes_iter: &mut &[u8]) -> Self where Self: Sized {
+        let common_data = ComponentData::extract_new(bytes_iter);
         let res = match common_data.kind {
             ComponentType::Custom => { Self::Custom {
                 common_data,
-                custom_data: CustomData::extract(bytes_iter)?,
+                custom_data: CustomData::extract_new(bytes_iter),
             } },
             ComponentType::Program8_1 | ComponentType::Program8_4 | ComponentType::Program => {
-                let paris = <ShortVec<(u64, String)>>::extract(bytes_iter)?;
+                let paris = <ShortVec<(u64, String)>>::extract_new(bytes_iter);
                 Self::Program {
                     common_data,
                     program_data: paris.0.into_iter().collect(),
@@ -426,7 +418,7 @@ impl Extractable for Component {
             },
             _ => Self::Normal { common_data },
         };
-        Some(res)
+        res
     }
 }
 
@@ -440,8 +432,8 @@ extractable_enum! { u8: pub WireKind {
 
 #[derive(Debug)]
 struct WirePath(Vec<Point>);
-impl Extractable for WirePath {
-    fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> where Self: Sized {
+impl NewExtractable for WirePath {
+    fn extract_new(bytes: &mut &[u8]) -> Self {
         const TELEPORT_WIRE: u8 = 0b0010_0000;
         const DIRECTIONS: [Point; 8] = [
             Point{x: 1, y: 0},
@@ -453,12 +445,12 @@ impl Extractable for WirePath {
             Point{x: 0, y: -1},
             Point{x: 1, y: -1},
         ];
-        let mut current_point = <Point>::extract(bytes_iter)?;
+        let mut current_point = <Point>::extract_new(bytes);
         let mut path = vec![current_point.clone()];
-        let mut segment = u8::extract(bytes_iter)?;
+        let mut segment = u8::extract_new(bytes);
         if segment == TELEPORT_WIRE {
-            path.push(Point::extract(bytes_iter)?);
-            return Some(Self(path));
+            path.push(Point::extract_new(bytes));
+            return Self(path);
         }
         while segment != 0 {
             let direction = &DIRECTIONS[(segment >> 5) as usize];
@@ -466,9 +458,9 @@ impl Extractable for WirePath {
             let offset = Point { x: direction.x * len, y: direction.y * len };
             current_point = Point{ x: current_point.x + offset.x, y: current_point.y + offset.y };
             path.push(current_point.clone());
-            segment = u8::extract(bytes_iter)?;
+            segment = u8::extract_new(bytes);
         }
-        Some(Self(path))
+        Self(path)
     }
 }
 
@@ -485,41 +477,27 @@ extractable_struct!{ pub Circuit {
     pub wires: LongVec<Wire>,
 }}
 
-impl<const N: usize, T: Extractable + Default + Copy> Extractable for [T; N] {
-    fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> {
-        let mut res = [T::default(); N];
-        for item in res.iter_mut().take(N) {
-            *item = T::extract(bytes_iter)?;
-        }
-        Some(res)
+impl NewExtractable for String {
+    fn extract_new(bytes: &mut &[u8]) -> Self {
+        from_utf8(&<ShortVec<u8>>::extract_new(bytes).0).unwrap().to_owned()
     }
 }
 
-impl Extractable for u8 {
-    fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> {
-        Some(*bytes_iter.next()?)
-    }
-}
-
-impl Extractable for String {
-    fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> {
-        Some(from_utf8(&<ShortVec<u8>>::extract(bytes_iter)?.0).unwrap().to_owned())
-    }
-}
-
-impl Extractable for bool {
-    fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> {
-        let res = u8::extract(bytes_iter)? > 0;
-        Some(res)
+impl NewExtractable for bool {
+    fn extract_new(bytes: &mut &[u8]) -> Self where Self: Sized {
+        let res = bytes[0] > 0;
+        *bytes = &bytes[1..];
+        res
     }
 }
 
 macro_rules! extractable_int {
     ( $t:ty ) => {
-        impl Extractable for $t {
-            fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> {
-                let res = <$t>::from_le_bytes(<[u8; size_of::<$t>()]>::extract(bytes_iter)?);
-                Some(res)
+        impl NewExtractable for $t {
+            fn extract_new(bytes: &mut &[u8]) -> Self  {
+                let res = <$t>::from_le_bytes(bytes[0..size_of::<$t>()].try_into().unwrap());
+                *bytes = &bytes[size_of::<$t>()..];
+                res
             }
         }
     };
@@ -531,18 +509,19 @@ extractable_int!(i8);
 extractable_int!(u64);
 extractable_int!(u32);
 extractable_int!(u16);
+extractable_int!(u8);
 
 macro_rules! extractable_vec {
     ($visibility:vis $name:ident, $size:ty) => {
         $visibility struct $name<T>(Vec<T>);
-        impl<T: Extractable> Extractable for $name<T> {
-            fn extract(bytes_iter: &mut Iter<u8>) -> Option<Self> {
-                let len = <$size>::extract(bytes_iter)?;
+        impl<T: NewExtractable> NewExtractable for $name<T> {
+            fn extract_new(bytes: &mut &[u8]) -> Self {
+                let len = <$size>::extract_new(bytes);
                 let mut vec = Vec::with_capacity(len as usize);
                 for _ in 0..len {
-                    vec.push(T::extract(bytes_iter)?);
+                    vec.push(T::extract_new(bytes));
                 }
-                Some(Self(vec))
+                Self(vec)
             }
         }
         impl<T: std::fmt::Debug> std::fmt::Debug for $name<T> {

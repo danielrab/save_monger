@@ -1,1 +1,1 @@
-cargo run --release -- "C:\Users\s17b1\AppData\Roaming\Godot\app_userdata\Turing Complete\schematics\architecture\schematic_hub\NANDverture\circuit.data"
+cargo run --release -- "C:\Users\s17b1\AppData\Roaming\Godot\app_userdata\Turing Complete\schematics\and_gate\Default\circuit.data"
