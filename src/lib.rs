@@ -1,52 +1,18 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, fs, mem::size_of, str::from_utf8};
-use snap::{raw::Decoder};
+use snap::raw::Decoder;
+use std::{mem::size_of, collections::HashMap, str::from_utf8};
 
-pub fn get_data_from_file(path: &str) -> Circuit {
-    let bytes = fs::read(path).expect("error reading file");
-    match bytes[0] {
-        6 => {
-            let uncompressed = Decoder::new().decompress_vec(&bytes[1..]).expect("failed to decompress, probably hit end of file");
-            get_data_from_bytes(&uncompressed)
-        },
-        v => panic!("unsupported version: {v}"),
-    }
+pub fn parse(bytes: &[u8]) -> Circuit {
+    assert!(bytes[0] == 6, "unsupported version: {}", bytes[0]);
+    let bytes = Decoder::new().decompress_vec(&bytes[1..]).expect("failed to decompress, probably hit end of file");
+    Circuit::extract(&mut &bytes[..])
 }
 
-fn get_data_from_bytes(mut bytes: &[u8]) -> Circuit {
-    let bytes_ref = &mut bytes;
-    Circuit::extract_new(bytes_ref)
+trait Extractable {
+    fn extract(bytes: &mut &[u8]) -> Self where Self: Sized;
 }
 
-trait NewExtractable {
-    fn extract_new(bytes: &mut &[u8]) -> Self where Self: Sized;
-}
-
-macro_rules! extractable_struct {
-    ($visibility:vis $name:ident {$($visibility_inner:vis $field:ident: $t:ty),*$(,)?}) => {
-        #[derive(Debug)]
-        $visibility struct $name {
-            $($visibility_inner $field: $t,)*
-        }
-        impl NewExtractable for $name {
-            fn extract_new(bytes: &mut &[u8]) -> Self  {
-                Self{
-                    $($field: <$t>::extract_new(bytes),)*
-                }
-            }
-        }
-    };
-}
-extractable_struct!{pub Point {
-    pub x: i16,
-    pub y: i16,
-}}
-impl Clone for Point {
-    fn clone(&self) -> Self {
-        Point { x: self.x, y: self.y }
-    }
-}
 macro_rules! extractable_enum {
     ($int:ty : $visibility:vis $name:ident {$($field:ident = $value:literal),*$(,)?}) => {
         #[derive(Debug)]
@@ -59,14 +25,64 @@ macro_rules! extractable_enum {
                 }
             }
         }
-        impl NewExtractable for $name {
-            fn extract_new(bytes: &mut &[u8]) -> Self {
-                let res = <$int>::extract_new(bytes);
+        impl Extractable for $name {
+            fn extract(bytes: &mut &[u8]) -> Self {
+                let res = <$int>::extract(bytes);
                 res.into()
             }
         }
     };
 }
+
+macro_rules! extractable_vec {
+    ($visibility:vis $name:ident, $size:ty) => {
+        $visibility struct $name<T>(Vec<T>);
+        impl<T: Extractable> Extractable for $name<T> {
+            fn extract(bytes: &mut &[u8]) -> Self {
+                let len = <$size>::extract(bytes);
+                let mut vec = Vec::with_capacity(len as usize);
+                for _ in 0..len {
+                    vec.push(T::extract(bytes));
+                }
+                Self(vec)
+            }
+        }
+        impl<T: std::fmt::Debug> std::fmt::Debug for $name<T> {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "{:?}", self.0)
+            }
+        }
+    };
+}
+
+macro_rules! extractable_int {
+    ( $t:ty ) => {
+        impl Extractable for $t {
+            fn extract(bytes: &mut &[u8]) -> Self  {
+                let res = <$t>::from_le_bytes(bytes[0..size_of::<$t>()].try_into().unwrap());
+                *bytes = &bytes[size_of::<$t>()..];
+                res
+            }
+        }
+    };
+}
+
+macro_rules! extractable_struct {
+    ($visibility:vis $name:ident {$($visibility_inner:vis $field:ident: $t:ty),*$(,)?}) => {
+        #[derive(Debug)]
+        $visibility struct $name {
+            $($visibility_inner $field: $t,)*
+        }
+        impl Extractable for $name {
+            fn extract(bytes: &mut &[u8]) -> Self  {
+                Self{
+                    $($field: <$t>::extract(bytes),)*
+                }
+            }
+        }
+    };
+}
+
 extractable_enum! {u8 : pub SyncState {
     Unsynced = 0,
     Synced = 1,
@@ -387,9 +403,9 @@ extractable_struct! { pub CustomData {
     pub custom_displacement: Point,
 }}
 
-impl<T: NewExtractable, U: NewExtractable> NewExtractable for (T, U) {
-    fn extract_new(bytes_iter: &mut &[u8]) -> Self where Self: Sized {
-        (T::extract_new(bytes_iter), U::extract_new(bytes_iter))
+impl<T: Extractable, U: Extractable> Extractable for (T, U) {
+    fn extract(bytes_iter: &mut &[u8]) -> Self where Self: Sized {
+        (T::extract(bytes_iter), U::extract(bytes_iter))
     }
 }
 
@@ -400,16 +416,16 @@ pub enum Component {
     Program{common_data: ComponentData, program_data: HashMap<u64, String>},
 }
 
-impl NewExtractable for Component {
-    fn extract_new(bytes_iter: &mut &[u8]) -> Self where Self: Sized {
-        let common_data = ComponentData::extract_new(bytes_iter);
+impl Extractable for Component {
+    fn extract(bytes_iter: &mut &[u8]) -> Self where Self: Sized {
+        let common_data = ComponentData::extract(bytes_iter);
         let res = match common_data.kind {
             ComponentType::Custom => { Self::Custom {
                 common_data,
-                custom_data: CustomData::extract_new(bytes_iter),
+                custom_data: CustomData::extract(bytes_iter),
             } },
             ComponentType::Program8_1 | ComponentType::Program8_4 | ComponentType::Program => {
-                let paris = <ShortVec<(u64, String)>>::extract_new(bytes_iter);
+                let paris = <ShortVec<(u64, String)>>::extract(bytes_iter);
                 Self::Program {
                     common_data,
                     program_data: paris.0.into_iter().collect(),
@@ -432,8 +448,8 @@ extractable_enum! { u8: pub WireKind {
 
 #[derive(Debug)]
 struct WirePath(Vec<Point>);
-impl NewExtractable for WirePath {
-    fn extract_new(bytes: &mut &[u8]) -> Self {
+impl Extractable for WirePath {
+    fn extract(bytes: &mut &[u8]) -> Self {
         const TELEPORT_WIRE: u8 = 0b0010_0000;
         const DIRECTIONS: [Point; 8] = [
             Point{x: 1, y: 0},
@@ -445,11 +461,11 @@ impl NewExtractable for WirePath {
             Point{x: 0, y: -1},
             Point{x: 1, y: -1},
         ];
-        let mut current_point = <Point>::extract_new(bytes);
+        let mut current_point = <Point>::extract(bytes);
         let mut path = vec![current_point.clone()];
-        let mut segment = u8::extract_new(bytes);
+        let mut segment = u8::extract(bytes);
         if segment == TELEPORT_WIRE {
-            path.push(Point::extract_new(bytes));
+            path.push(Point::extract(bytes));
             return Self(path);
         }
         while segment != 0 {
@@ -458,7 +474,7 @@ impl NewExtractable for WirePath {
             let offset = Point { x: direction.x * len, y: direction.y * len };
             current_point = Point{ x: current_point.x + offset.x, y: current_point.y + offset.y };
             path.push(current_point.clone());
-            segment = u8::extract_new(bytes);
+            segment = u8::extract(bytes);
         }
         Self(path)
     }
@@ -477,31 +493,21 @@ extractable_struct!{ pub Circuit {
     pub wires: LongVec<Wire>,
 }}
 
-impl NewExtractable for String {
-    fn extract_new(bytes: &mut &[u8]) -> Self {
-        from_utf8(&<ShortVec<u8>>::extract_new(bytes).0).unwrap().to_owned()
+impl Extractable for String {
+    fn extract(bytes: &mut &[u8]) -> Self {
+        from_utf8(&<ShortVec<u8>>::extract(bytes).0).unwrap().to_owned()
     }
 }
 
-impl NewExtractable for bool {
-    fn extract_new(bytes: &mut &[u8]) -> Self where Self: Sized {
+impl Extractable for bool {
+    fn extract(bytes: &mut &[u8]) -> Self where Self: Sized {
         let res = bytes[0] > 0;
         *bytes = &bytes[1..];
         res
     }
 }
 
-macro_rules! extractable_int {
-    ( $t:ty ) => {
-        impl NewExtractable for $t {
-            fn extract_new(bytes: &mut &[u8]) -> Self  {
-                let res = <$t>::from_le_bytes(bytes[0..size_of::<$t>()].try_into().unwrap());
-                *bytes = &bytes[size_of::<$t>()..];
-                res
-            }
-        }
-    };
-}
+
 extractable_int!(i64);
 extractable_int!(i32);
 extractable_int!(i16);
@@ -511,26 +517,22 @@ extractable_int!(u32);
 extractable_int!(u16);
 extractable_int!(u8);
 
-macro_rules! extractable_vec {
-    ($visibility:vis $name:ident, $size:ty) => {
-        $visibility struct $name<T>(Vec<T>);
-        impl<T: NewExtractable> NewExtractable for $name<T> {
-            fn extract_new(bytes: &mut &[u8]) -> Self {
-                let len = <$size>::extract_new(bytes);
-                let mut vec = Vec::with_capacity(len as usize);
-                for _ in 0..len {
-                    vec.push(T::extract_new(bytes));
-                }
-                Self(vec)
-            }
-        }
-        impl<T: std::fmt::Debug> std::fmt::Debug for $name<T> {
-            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "{:?}", self.0)
-            }
-        }
-    };
-}
+
 
 extractable_vec!(pub ShortVec, u16);
 extractable_vec!(pub LongVec, u64);
+
+
+extractable_struct!{pub Point {
+    pub x: i16,
+    pub y: i16,
+}}
+impl Clone for Point {
+    fn clone(&self) -> Self {
+        Point { x: self.x, y: self.y }
+    }
+}
+
+
+
+
