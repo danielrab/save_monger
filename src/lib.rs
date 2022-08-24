@@ -489,7 +489,7 @@ extractable_struct! { pub Wire {
 
 extractable_struct!{ pub Circuit {
     pub header: Header,
-    pub component: LongVec<Component>,
+    pub components: LongVec<Component>,
     pub wires: LongVec<Wire>,
 }}
 
