@@ -1,95 +1,63 @@
-#![allow(dead_code)]
+#![feature(decl_macro)]
 
 use snap::raw::Decoder;
-use std::{mem::size_of, collections::HashMap, str::from_utf8};
+use std::{
+    mem,
+    fmt::Debug,
+    slice,
+    str,
+};
 
-pub fn parse(bytes: &[u8]) -> Circuit {
+pub fn parse<'a>(bytes: Vec<u8>) -> Circuit<'a> {
     assert!(bytes[0] == 6, "unsupported version: {}", bytes[0]);
     let bytes = Decoder::new().decompress_vec(&bytes[1..]).expect("failed to decompress, probably hit end of file");
-    Circuit::extract(&mut &bytes[..])
+    Circuit::extract(bytes)
 }
 
-trait Extractable {
-    fn extract(bytes: &mut &[u8]) -> Self where Self: Sized;
+#[derive(Debug, Clone, Copy)]
+pub struct Point {
+    pub x: i16,
+    pub y: i16,
+}
+impl Point {
+    fn add(&mut self, other: &Point) {
+        self.x += other.x;
+        self.y += other.y;
+    }
+    fn mul(&mut self, other: i16) {
+        self.x *= other;
+        self.y *= other;
+    }
 }
 
-macro_rules! extractable_enum {
-    ($int:ty : $visibility:vis $name:ident {$($field:ident = $value:literal),*$(,)?}) => {
-        #[derive(Debug)]
-        $visibility enum $name {$($field = $value,)*}
-        impl From<$int> for $name {
-            fn from(orig: $int) -> Self {
-                match orig {
-                    $($value => Self::$field,)*
-                    v => panic!("unexpected {} value: {v}", stringify!($name)),
-                }
-            }
-        }
-        impl Extractable for $name {
-            fn extract(bytes: &mut &[u8]) -> Self {
-                let res = <$int>::extract(bytes);
-                res.into()
-            }
-        }
-    };
-}
-
-macro_rules! extractable_vec {
-    ($visibility:vis $name:ident, $size:ty) => {
-        $visibility struct $name<T>($visibility Vec<T>);
-        impl<T: Extractable> Extractable for $name<T> {
-            fn extract(bytes: &mut &[u8]) -> Self {
-                let len = <$size>::extract(bytes);
-                let mut vec = Vec::with_capacity(len as usize);
-                for _ in 0..len {
-                    vec.push(T::extract(bytes));
-                }
-                Self(vec)
-            }
-        }
-        impl<T: std::fmt::Debug> std::fmt::Debug for $name<T> {
-            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "{:?}", self.0)
-            }
-        }
-    };
-}
-
-macro_rules! extractable_int {
-    ( $t:ty ) => {
-        impl Extractable for $t {
-            fn extract(bytes: &mut &[u8]) -> Self  {
-                let res = <$t>::from_le_bytes(bytes[0..size_of::<$t>()].try_into().unwrap());
-                *bytes = &bytes[size_of::<$t>()..];
-                res
-            }
-        }
-    };
-}
-
-macro_rules! extractable_struct {
-    ($visibility:vis $name:ident {$($visibility_inner:vis $field:ident: $t:ty),*$(,)?}) => {
-        #[derive(Debug)]
-        $visibility struct $name {
-            $($visibility_inner $field: $t,)*
-        }
-        impl Extractable for $name {
-            fn extract(bytes: &mut &[u8]) -> Self  {
-                Self{
-                    $($field: <$t>::extract(bytes),)*
-                }
-            }
-        }
-    };
-}
-
-extractable_enum! {u8 : pub SyncState {
+#[derive(Debug, Clone, Copy)]
+pub enum SyncState {
     Unsynced = 0,
     Synced = 1,
     ChangedAfterSync = 2,
-}}
+}
 
-extractable_enum! {u16 : pub ComponentType {
+#[derive(Debug)]
+pub struct Header<'a> {
+    pub save_id: u64,
+    pub hub_id: u32,
+    pub gate: u64,
+    pub delay: u64,
+    pub menu_visible: bool,
+    pub clock_speed: u32,
+    pub dependencies: &'a [u64],
+    pub description: &'a str,
+    pub camera_position: Point,
+    pub synced: SyncState,
+    pub campaign_bound: bool,
+    pub arch_score: u16,
+    pub player_data: &'a [u8],
+    pub hub_description: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u16)]
+pub enum ComponentKind {
     Error                   = 0,
     Off                     = 1,
     On                      = 2,
@@ -367,172 +335,206 @@ extractable_enum! {u16 : pub ComponentType {
     Ashr16                  = 245,
     Ashr32                  = 246,
     Ashr64                  = 247,
-}}
-
-
-extractable_struct! { pub Header {
-    pub save_id: u64,
-    pub hub_id: u32,
-    pub gate: u64,
-    pub delay: u64,
-    pub menu_visible: bool,
-    pub clock_speed: u32,
-    pub dependencies: ShortVec<u64>,
-    pub description: String,
-    pub camera_position: Point,
-    pub synced: SyncState,
-    pub campaign_bound: bool,
-    pub arch_score: u16,
-    pub player_data: ShortVec<u8>,
-    pub hub_description: String,
-}}
-
-extractable_struct! { pub ComponentData {
-    pub kind: ComponentType,
-    pub position: Point,
-    pub rotation: u8,
-    pub permanent_id: u64,
-    pub custom_string: String,
-    pub setting_1: u64,
-    pub setting_2: u64,
-    pub ui_order: i16,
-}}
-
-extractable_struct! { pub CustomData {
-    pub custom_id: u64,
-    pub custom_displacement: Point,
-}}
-
-impl<T: Extractable, U: Extractable> Extractable for (T, U) {
-    fn extract(bytes_iter: &mut &[u8]) -> Self where Self: Sized {
-        (T::extract(bytes_iter), U::extract(bytes_iter))
-    }
 }
 
 #[derive(Debug)]
-pub enum Component {
-    Normal{common_data: ComponentData},
-    Custom{common_data: ComponentData, custom_data: CustomData},
-    Program{common_data: ComponentData, program_data: HashMap<u64, String>},
+pub struct Component<'a> {
+    pub kind: ComponentKind,
+    pub position: Point,
+    pub rotation: u8,
+    pub permanent_id: u64,
+    pub custom_string: &'a str,
+    pub setting_1: u64,
+    pub setting_2: u64,
+    pub ui_order: i16,
+    pub custom_id: u64,
+    pub custom_displacement: Point,
+    pub selected_programs: Option<Vec<(u64, &'a str)>>
 }
 
-impl Extractable for Component {
-    fn extract(bytes_iter: &mut &[u8]) -> Self where Self: Sized {
-        let common_data = ComponentData::extract(bytes_iter);
-        let res = match common_data.kind {
-            ComponentType::Custom => { Self::Custom {
-                common_data,
-                custom_data: CustomData::extract(bytes_iter),
-            } },
-            ComponentType::Program8_1 | ComponentType::Program8_4 | ComponentType::Program => {
-                let paris = <ShortVec<(u64, String)>>::extract(bytes_iter);
-                Self::Program {
-                    common_data,
-                    program_data: paris.0.into_iter().collect(),
-                }
-                
-            },
-            _ => Self::Normal { common_data },
-        };
-        res
-    }
-}
-
-extractable_enum! { u8: pub WireKind {
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum WireKind {
     Width1 = 0,
     Width8 = 1,
     Width16 = 2,
     Width32 = 3,
     Width64 = 4,
-}}
-
-#[derive(Debug)]
-pub struct WirePath(pub Vec<Point>);
-impl Extractable for WirePath {
-    fn extract(bytes: &mut &[u8]) -> Self {
-        const TELEPORT_WIRE: u8 = 0b0010_0000;
-        const DIRECTIONS: [Point; 8] = [
-            Point{x: 1, y: 0},
-            Point{x: 1, y: 1},
-            Point{x: 0, y: 1},
-            Point{x: -1, y: 1},
-            Point{x: -1, y: 0},
-            Point{x: -1, y: -1},
-            Point{x: 0, y: -1},
-            Point{x: 1, y: -1},
-        ];
-        let mut current_point = <Point>::extract(bytes);
-        let mut path = vec![current_point.clone()];
-        let mut segment = u8::extract(bytes);
-        if segment == TELEPORT_WIRE {
-            path.push(Point::extract(bytes));
-            return Self(path);
-        }
-        while segment != 0 {
-            let direction = &DIRECTIONS[(segment >> 5) as usize];
-            let len = (segment & 0b0001_1111) as i16;
-            let offset = Point { x: direction.x * len, y: direction.y * len };
-            current_point = Point{ x: current_point.x + offset.x, y: current_point.y + offset.y };
-            path.push(current_point.clone());
-            segment = u8::extract(bytes);
-        }
-        Self(path)
-    }
 }
 
-extractable_struct! { pub Wire {
+pub struct Wire<'a> {
     pub kind: WireKind,
     pub color: u8,
-    pub comment: String,
-    pub path: WirePath
-}}
+    pub comment: &'a str,
+    pub path: (Point, Point),
+}
 
-extractable_struct!{ pub Circuit {
-    pub header: Header,
-    pub components: LongVec<Component>,
-    pub wires: LongVec<Wire>,
-}}
+#[allow(dead_code)]
+pub struct Circuit<'a> {
+    original_bytes: Vec<u8>,
+    header: Header<'a>,
+    components: Vec<Component<'a>>,
+    wires: Vec<Wire<'a>>
+}
+impl Circuit<'_> {
+    fn extract<'a>(bytes: Vec<u8>) -> Circuit<'a> {
+        let ptr = unsafe { bytes.first().unwrap_unchecked() } as *const u8;
+        let mut current_offset = 0;
 
-impl Extractable for String {
-    fn extract(bytes: &mut &[u8]) -> Self {
-        from_utf8(&<ShortVec<u8>>::extract(bytes).0).unwrap().to_owned()
+        // macros
+        macro simple_extract {
+            ($t:ty) => {{
+                let res = unsafe { *mem::transmute::<_, &$t>(ptr.offset(current_offset as isize)) };
+                current_offset += mem::size_of::<$t>();
+                res
+            }}
+        }
+        macro slice_extract {
+            ($count:ty[$t:ty]) => {{
+                let len = simple_extract!($count);
+                let offset = mem::size_of::<$t>() * len as usize;
+                let res = unsafe { slice::from_raw_parts::<$t>(mem::transmute::<_, &$t>(ptr.offset(current_offset as isize)), len as usize) };
+                current_offset += offset;
+                res
+            }}
+        }
+        macro str_extract {
+            () => {{
+                let bytes = slice_extract!(u16[u8]);
+                unsafe { str::from_utf8_unchecked(bytes)}
+            }}
+        }
+
+        let header = {
+            let save_id = simple_extract!(u64);
+            let hub_id = simple_extract!(u32);
+            let gate = simple_extract!(u64);
+            let delay = simple_extract!(u64);
+            let menu_visible = simple_extract!(bool);
+            let clock_speed = simple_extract!(u32);
+            let dependencies = slice_extract!(u16[u64]);
+            let description = str_extract!();
+            let camera_position = simple_extract!(Point);
+            let synced = simple_extract!(SyncState);
+            let campaign_bound = simple_extract!(bool);
+            let arch_score = simple_extract!(u16);
+            let player_data = slice_extract!(u16[u8]);
+            let hub_description = str_extract!();
+            Header { save_id, hub_id, gate, delay, menu_visible, clock_speed, dependencies, description, camera_position, synced, campaign_bound, arch_score, player_data, hub_description }
+        };
+        
+        let components = {
+            let components_count = simple_extract!(u64);
+            let mut components = Vec::with_capacity(components_count as usize);
+            for _ in 0..components_count {
+                let kind = simple_extract!(ComponentKind);
+                let position = simple_extract!(Point);
+                let rotation = simple_extract!(u8);
+                let permanent_id = simple_extract!(u64);
+                let custom_string = str_extract!();
+                let setting_1 = simple_extract!(u64);
+                let setting_2 = simple_extract!(u64);
+                let ui_order = simple_extract!(i16);
+                let (custom_id, custom_displacement) = if kind == ComponentKind::Custom {
+                    (simple_extract!(u64), simple_extract!(Point))
+                } else {
+                    (0, Point {x: 0, y: 0})
+                };
+                let selected_programs = if matches!(kind, ComponentKind::Program8_1 | ComponentKind::Program8_4 | ComponentKind::Program) {
+                    let len = simple_extract!(u16);
+                    let mut res = Vec::with_capacity(len as usize);
+                    for _ in 0..len {
+                        res.push((simple_extract!(u64), str_extract!()));
+                    }
+                    Some(res)
+                } else {
+                    None
+                };
+
+                let component = Component { kind, position, rotation, permanent_id, custom_string, setting_1, setting_2, ui_order, custom_id, custom_displacement, selected_programs };
+                components.push(component);
+            }
+            components
+        };
+        
+        let wires = {
+            let wires_count = simple_extract!(u64);
+            let mut wires = Vec::with_capacity(wires_count as usize);
+            const TELEPORT_WIRE: u8 = 0b0010_0000;
+            const DIRECTIONS: [Point; 8] = [
+                Point{x: 1, y: 0},
+                Point{x: 1, y: 1},
+                Point{x: 0, y: 1},
+                Point{x: -1, y: 1},
+                Point{x: -1, y: 0},
+                Point{x: -1, y: -1},
+                Point{x: 0, y: -1},
+                Point{x: 1, y: -1},
+            ];
+            for _ in 0..wires_count {
+                let kind = simple_extract!(WireKind);
+                let color = simple_extract!(u8);
+                let comment = str_extract!();
+                let start = simple_extract!(Point);
+                let mut end = start.clone();
+                loop {
+                    let segment = simple_extract!(u8);
+                    if segment == 0 {break;}
+                    if segment == TELEPORT_WIRE {
+                        end = simple_extract!(Point);
+                        let mut direction = DIRECTIONS[(segment >> 5) as usize];
+                        let len = (segment & 0b0001_1111) as i16;
+                        direction.mul(len);
+                        end.add(&direction);
+                        break;
+                    }
+
+                }
+                let path = (start, end);
+                let wire = Wire {kind, color, comment, path};
+                wires.push(wire)
+            }
+            wires
+        };
+        assert_eq!(current_offset, bytes.len(), "the final offset isn't equal to the length of the file");
+        Circuit { 
+            original_bytes: bytes,
+            header,
+            components,
+            wires,
+        }
+    }
+}
+impl Debug for Circuit<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Circuit")
+           .field("header", &self.header)
+           .field("components", &self.components)
+           .finish()
     }
 }
 
-impl Extractable for bool {
-    fn extract(bytes: &mut &[u8]) -> Self where Self: Sized {
-        let res = bytes[0] > 0;
-        *bytes = &bytes[1..];
-        res
+
+
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, time::Instant};
+    use super::*;
+
+    fn parse_from_file(path: &str) -> Circuit {
+        let bytes = fs::read(path).expect("error reading file");
+        parse(bytes)
+    }
+
+    #[test]
+    fn nandverture() {
+        let start = Instant::now();
+        let circuit = parse_from_file(r"C:\Users\s17b1\AppData\Roaming\Godot\app_userdata\Turing Complete\schematics\architecture\schematic_hub\NANDverture\circuit.data");
+        println!("parsing took {:?}", start.elapsed());
+        assert_eq!(circuit.header.clock_speed, 100000);
+        assert_eq!(circuit.wires.len(), 6591);
+        assert_eq!(circuit.components.len(), 1623);
     }
 }
-
-
-extractable_int!(i64);
-extractable_int!(i32);
-extractable_int!(i16);
-extractable_int!(i8);
-extractable_int!(u64);
-extractable_int!(u32);
-extractable_int!(u16);
-extractable_int!(u8);
-
-
-
-extractable_vec!(pub ShortVec, u16);
-extractable_vec!(pub LongVec, u64);
-
-
-extractable_struct!{pub Point {
-    pub x: i16,
-    pub y: i16,
-}}
-impl Clone for Point {
-    fn clone(&self) -> Self {
-        Point { x: self.x, y: self.y }
-    }
-}
-
-
-
 
