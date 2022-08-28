@@ -372,9 +372,9 @@ pub struct Wire<'a> {
 #[allow(dead_code)]
 pub struct Circuit<'a> {
     original_bytes: Vec<u8>,
-    header: Header<'a>,
-    components: Vec<Component<'a>>,
-    wires: Vec<Wire<'a>>
+    pub header: Header<'a>,
+    pub components: Vec<Component<'a>>,
+    pub wires: Vec<Wire<'a>>
 }
 impl Circuit<'_> {
     fn extract<'a>(bytes: Vec<u8>) -> Circuit<'a> {
