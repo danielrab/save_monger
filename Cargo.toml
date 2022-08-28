@@ -1,6 +1,6 @@
 [package]
 name = "tc_save_monger"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 license = "MIT"
 description = "a reimplementation in Rust of the save_monger library for the game Turing Complete"

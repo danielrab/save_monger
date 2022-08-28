@@ -482,13 +482,12 @@ impl Circuit<'_> {
                     if segment == 0 {break;}
                     if segment == TELEPORT_WIRE {
                         end = simple_extract!(Point);
-                        let mut direction = DIRECTIONS[(segment >> 5) as usize];
-                        let len = (segment & 0b0001_1111) as i16;
-                        direction.mul(len);
-                        end.add(&direction);
                         break;
                     }
-
+                    let mut direction = DIRECTIONS[(segment >> 5) as usize];
+                    let len = (segment & 0b0001_1111) as i16;
+                    direction.mul(len);
+                    end.add(&direction);
                 }
                 let path = (start, end);
                 let wire = Wire {kind, color, comment, path};
