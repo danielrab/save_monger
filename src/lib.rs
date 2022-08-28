@@ -14,7 +14,7 @@ pub fn parse<'a>(bytes: Vec<u8>) -> Circuit<'a> {
     Circuit::extract(bytes)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Point {
     pub x: i16,
     pub y: i16,
