@@ -367,6 +367,7 @@ pub struct Wire<'a> {
     pub color: u8,
     pub comment: &'a str,
     pub path: (Point, Point),
+    pub raw_path: &'a [u8],
 }
 
 #[allow(dead_code)]
@@ -476,6 +477,7 @@ impl Circuit<'_> {
                 let color = simple_extract!(u8);
                 let comment = str_extract!();
                 let start = simple_extract!(Point);
+                let start_offset = current_offset;
                 let mut end = start.clone();
                 loop {
                     let segment = simple_extract!(u8);
@@ -489,8 +491,12 @@ impl Circuit<'_> {
                     direction.mul(len);
                     end.add(&direction);
                 }
+                let end_offset = current_offset - 1;
                 let path = (start, end);
-                let wire = Wire {kind, color, comment, path};
+                let raw_path = unsafe {
+                    slice::from_raw_parts(ptr.offset(start_offset as isize), end_offset - start_offset)
+                };
+                let wire = Wire {kind, color, comment, path, raw_path};
                 wires.push(wire)
             }
             wires
