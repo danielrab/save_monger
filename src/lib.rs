@@ -14,19 +14,33 @@ pub fn parse<'a>(bytes: Vec<u8>) -> Circuit<'a> {
     Circuit::extract(bytes)
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Point {
     pub x: i16,
     pub y: i16,
 }
 impl Point {
-    fn add(&mut self, other: &Point) {
-        self.x += other.x;
-        self.y += other.y;
+    pub fn add(self, other: &Point) -> Self {
+        Self{
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
     }
-    fn mul(&mut self, other: i16) {
-        self.x *= other;
-        self.y *= other;
+    pub fn mul(self, other: i16) -> Self {
+        Self{
+            x: self.x * other,
+            y: self.y * other,
+        }
+    }
+    pub fn rotate(self, rotation: u8) -> Self {
+        let (x, y) = match rotation % 4 {
+            0 => (self.x, self.y),
+            1 => (-self.y, self.x),
+            2 => (-self.x, -self.y),
+            3 => (self.y, -self.x),
+            _ => unreachable!()
+        };
+        Self {x,y}
     }
 }
 
@@ -385,7 +399,7 @@ impl Circuit<'_> {
         // macros
         macro simple_extract {
             ($t:ty) => {{
-                let res = unsafe { *mem::transmute::<_, &$t>(ptr.offset(current_offset as isize)) };
+                let res = unsafe { mem::transmute::<_, &$t>(ptr.offset(current_offset as isize)).clone() };
                 current_offset += mem::size_of::<$t>();
                 res
             }}
@@ -486,10 +500,9 @@ impl Circuit<'_> {
                         end = simple_extract!(Point);
                         break;
                     }
-                    let mut direction = DIRECTIONS[(segment >> 5) as usize];
+                    let direction = DIRECTIONS[(segment >> 5) as usize].clone();
                     let len = (segment & 0b0001_1111) as i16;
-                    direction.mul(len);
-                    end.add(&direction);
+                    end = end.add(&direction.mul(len));
                 }
                 let end_offset = current_offset - 1;
                 let path = (start, end);
